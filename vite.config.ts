@@ -140,6 +140,10 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
 
   return {
+    preview: {
+        allowedHosts: ["eco-explore.onrender.com"],
+    },
+    
     plugins: [
       // 1. TanStack Router — file-based route generation (client-side only)
       tanstackRouter({
