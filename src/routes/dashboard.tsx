@@ -1,226 +1,390 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CloudSun, Users, AlertTriangle, Leaf, TrendingUp, Calendar, Sparkles, MapPin, ArrowUpRight } from "lucide-react";
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid, RadialBar, RadialBarChart, PolarAngleAxis } from "recharts";
-import { motion } from "framer-motion";
+import { useEffect, useState } from "react";
+import { CloudSun, Droplets, Loader2, MapPin, RefreshCw, Wind } from "lucide-react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { SectionHeader } from "@/components/SectionHeader";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({
     meta: [
-      { title: "Live Tourism Dashboard — EcoExplore" },
-      { name: "description", content: "Real-time crowd levels, weather, alerts and sustainability across Goa." },
+      { title: "Goa Live Weather & Air Quality — EcoExplore" },
+      { name: "description", content: "Live regional weather and air-quality readings from towns across Goa." },
     ],
   }),
   component: Dashboard,
 });
 
-const crowdData = [
-  { h: "06", v: 12 }, { h: "08", v: 28 }, { h: "10", v: 56 }, { h: "12", v: 78 },
-  { h: "14", v: 86 }, { h: "16", v: 72 }, { h: "18", v: 64 }, { h: "20", v: 38 }, { h: "22", v: 22 },
+type WeatherResponse = {
+  current: {
+    time: string;
+    temperature_2m: number;
+    relative_humidity_2m: number;
+    apparent_temperature: number;
+    precipitation: number;
+    weather_code: number;
+    wind_speed_10m: number;
+  };
+  hourly: {
+    time: string[];
+    temperature_2m: number[];
+    precipitation_probability: number[];
+  };
+};
+
+type AirQualityResponse = {
+  current: {
+    time: string;
+    us_aqi: number;
+    pm2_5: number;
+  };
+};
+
+type GoaLocation = {
+  name: string;
+  region: string;
+  latitude: string;
+  longitude: string;
+};
+
+type PlaceReading = {
+  location: GoaLocation;
+  weather: WeatherResponse;
+  air: AirQualityResponse;
+};
+
+type DashboardData = {
+  places: PlaceReading[];
+  hourly: { time: string; temperature: number; rain: number }[];
+  updatedAt: string;
+  average: {
+    temperature: number;
+    feelsLike: number;
+    humidity: number;
+    precipitation: number;
+    aqi: number;
+    pm2_5: number;
+  };
+};
+
+const goaLocations: GoaLocation[] = [
+  { name: "Mapusa", region: "North Goa", latitude: "15.5937", longitude: "73.8141" },
+  { name: "Panjim", region: "Central Goa", latitude: "15.4909", longitude: "73.8278" },
+  { name: "Vasco da Gama", region: "Central Goa", latitude: "15.3991", longitude: "73.8110" },
+  { name: "Margao", region: "South Goa", latitude: "15.2993", longitude: "74.1240" },
+  { name: "Canacona", region: "South Goa", latitude: "14.9951", longitude: "74.0500" },
 ];
 
-const popular = [
-  { name: "Baga Beach", crowd: 92, trend: "+12%" },
-  { name: "Anjuna Flea Market", crowd: 74, trend: "+5%" },
-  { name: "Old Goa Basilica", crowd: 41, trend: "-3%" },
-  { name: "Palolem", crowd: 33, trend: "-9%" },
-  { name: "Dudhsagar", crowd: 88, trend: "+18%" },
-];
+const weatherDescriptions: Record<number, string> = {
+  0: "Clear sky",
+  1: "Mostly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  48: "Rime fog",
+  51: "Light drizzle",
+  53: "Drizzle",
+  55: "Heavy drizzle",
+  61: "Light rain",
+  63: "Rain",
+  65: "Heavy rain",
+  71: "Light snow",
+  73: "Snow",
+  75: "Heavy snow",
+  80: "Rain showers",
+  81: "Rain showers",
+  82: "Heavy rain showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm with hail",
+  99: "Thunderstorm with hail",
+};
 
-const events = [
-  { date: "Sat", title: "Saturday Night Market", place: "Arpora", tag: "Culture" },
-  { date: "Sun", title: "Heritage Walk · Fontainhas", place: "Panjim", tag: "Heritage" },
-  { date: "Mon", title: "Sunset Yoga", place: "Ashvem Beach", tag: "Wellness" },
-];
+function aqiDescription(aqi: number) {
+  if (aqi <= 50) return { label: "Good", tone: "text-eco bg-eco/10" };
+  if (aqi <= 100) return { label: "Moderate", tone: "text-foreground bg-sun/15" };
+  if (aqi <= 150) return { label: "Unhealthy for sensitive groups", tone: "text-coral bg-coral/10" };
+  if (aqi <= 200) return { label: "Unhealthy", tone: "text-coral bg-coral/10" };
+  if (aqi <= 300) return { label: "Very unhealthy", tone: "text-destructive bg-destructive/10" };
+  return { label: "Hazardous", tone: "text-destructive bg-destructive/10" };
+}
 
-const alerts = [
-  { tone: "coral", title: "Heavy traffic on NH66", desc: "Calangute → Baga · expect +25 min until 4pm" },
-  { tone: "sun", title: "Monsoon shower at 5pm", desc: "Plan indoor stops in Panjim" },
-];
+async function fetchJson<T>(url: string, signal: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) {
+    throw new Error(`Data service returned ${response.status}. Please try again.`);
+  }
+  return response.json() as Promise<T>;
+}
 
 function Dashboard() {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+
+    const latitude = goaLocations.map((location) => location.latitude).join(",");
+    const longitude = goaLocations.map((location) => location.longitude).join(",");
+    const weatherUrl = new URL("https://api.open-meteo.com/v1/forecast");
+    weatherUrl.search = new URLSearchParams({
+      latitude,
+      longitude,
+      current: "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+      hourly: "temperature_2m,precipitation_probability",
+      forecast_days: "1",
+      timezone: "Asia/Kolkata",
+    }).toString();
+
+    const airUrl = new URL("https://air-quality-api.open-meteo.com/v1/air-quality");
+    airUrl.search = new URLSearchParams({
+      latitude,
+      longitude,
+      current: "us_aqi,pm2_5",
+      timezone: "Asia/Kolkata",
+    }).toString();
+
+    Promise.all([
+      fetchJson<WeatherResponse[]>(weatherUrl.toString(), controller.signal),
+      fetchJson<AirQualityResponse[]>(airUrl.toString(), controller.signal),
+    ])
+      .then(([weather, air]) => {
+        if (weather.length !== goaLocations.length || air.length !== goaLocations.length) {
+          throw new Error("Some Goa location readings are unavailable. Please try again.");
+        }
+        const places = goaLocations.map((location, index) => {
+          const weatherReading = weather[index];
+          const airReading = air[index];
+          if (!Number.isFinite(weatherReading?.current?.temperature_2m) || !Number.isFinite(airReading?.current?.us_aqi)) {
+            throw new Error(`The data service returned an incomplete reading for ${location.name}.`);
+          }
+          return { location, weather: weatherReading, air: airReading };
+        });
+
+        const averageOf = (values: number[]) =>
+          values.reduce((total, value) => total + value, 0) / values.length;
+        const { time, temperature_2m, precipitation_probability } = places[0].weather.hourly;
+        const currentIndex = Math.max(0, time.findIndex((hour) => hour >= places[0].weather.current.time));
+        const hourly = time.slice(currentIndex, currentIndex + 12).map((hour, offset) => ({
+          time: hour.slice(11, 16),
+          temperature: Number(averageOf(places.map((place) => place.weather.hourly.temperature_2m[currentIndex + offset]).filter(Number.isFinite)).toFixed(1)),
+          rain: Math.round(averageOf(places.map((place) => place.weather.hourly.precipitation_probability[currentIndex + offset]).filter(Number.isFinite))),
+        }));
+        const [hour, minute] = places[0].weather.current.time.slice(11, 16).split(":").map(Number);
+
+        setData({
+          places,
+          hourly,
+          updatedAt: `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`,
+          average: {
+            temperature: averageOf(places.map((place) => place.weather.current.temperature_2m)),
+            feelsLike: averageOf(places.map((place) => place.weather.current.apparent_temperature)),
+            humidity: averageOf(places.map((place) => place.weather.current.relative_humidity_2m)),
+            precipitation: averageOf(places.map((place) => place.weather.current.precipitation)),
+            aqi: averageOf(places.map((place) => place.air.current.us_aqi)),
+            pm2_5: averageOf(places.map((place) => place.air.current.pm2_5)),
+          },
+        });
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setError(cause instanceof Error ? cause.message : "Could not load live conditions.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [refreshKey]);
+
+  const airStatus = data ? aqiDescription(data.average.aqi) : null;
+
   return (
-    <div className="mx-auto max-w-7xl px-6 pt-12 pb-20">
-      <SectionHeader eyebrow="Live · Updated 2 min ago" title="Goa, in real time." subtitle="The signals worth watching, all in one calm view." />
+    <div className="mx-auto max-w-7xl px-6 py-10 sm:py-14">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+        <SectionHeader
+          eyebrow="Live conditions · North, Central & South Goa"
+          title="Goa, right now."
+          subtitle="Weather and air quality across five towns, with regional averages and local readings."
+        />
+        <button
+          type="button"
+          onClick={() => setRefreshKey((key) => key + 1)}
+          disabled={loading}
+          className="inline-flex w-fit items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium transition hover:bg-accent disabled:opacity-60"
+        >
+          {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+          Refresh
+        </button>
+      </div>
 
-      {/* HERO STATS */}
-      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="mt-10 grid gap-5 lg:grid-cols-4">
-        <Stat icon={Users} label="Tourists active now" value="48,210" delta="+6.2% vs yesterday" tone="primary" />
-        <Stat icon={CloudSun} label="Weather · Panjim" value="29° clear" delta="UV 7 · humidity 72%" tone="sun" />
-        <Stat icon={Leaf} label="Avg eco score" value="8.1 / 10" delta="+0.3 this week" tone="eco" />
-        <Stat icon={AlertTriangle} label="Active alerts" value="2" delta="2 watchlist items" tone="coral" />
-      </motion.div>
+      <div className="mt-8 flex items-center gap-2 text-sm text-muted-foreground">
+        <MapPin className="size-4 text-primary" />
+        <span>Goa regional average · {goaLocations.length} locations</span>
+        {data?.updatedAt && <span>· Updated {data.updatedAt} IST</span>}
+      </div>
 
-      {/* MAIN GRID */}
-      <div className="mt-6 grid gap-5 lg:grid-cols-3">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}
-          className="lg:col-span-2 bg-card rounded-3xl p-6 shadow-soft border border-border/60">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="font-display text-2xl">Crowd density · today</h3>
-              <p className="text-sm text-foreground/70">North Goa beach belt average</p>
-            </div>
-            <span className="text-xs px-3 py-1 rounded-full bg-coral/15 text-coral font-medium">Peak 14:00</span>
+      {error && (
+        <div role="alert" className="mt-6 flex flex-col gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-destructive">{error}</p>
+          <button
+            type="button"
+            onClick={() => setRefreshKey((key) => key + 1)}
+            className="inline-flex w-fit items-center gap-2 rounded-full bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-accent"
+          >
+            <RefreshCw className="size-4" /> Try again
+          </button>
+        </div>
+      )}
+
+      {loading && !data ? (
+        <div className="mt-8 grid min-h-56 place-items-center rounded-3xl border border-border/60 bg-card">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <Loader2 className="size-5 animate-spin text-primary" /> Loading current conditions…
           </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={crowdData} margin={{ left: 0, right: 0, top: 8, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="oklch(0.46 0.11 190)" stopOpacity={0.55} />
-                    <stop offset="100%" stopColor="oklch(0.46 0.11 190)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="oklch(0.92 0.02 180)" vertical={false} />
-                <XAxis dataKey="h" stroke="oklch(0.5 0.025 200)" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="oklch(0.5 0.025 200)" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid oklch(0.9 0.02 180)" }} />
-                <Area type="monotone" dataKey="v" stroke="oklch(0.46 0.11 190)" strokeWidth={3} fill="url(#g)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </motion.div>
-
-        {/* ECO GAUGE */}
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-          className="bg-gradient-to-br from-eco/15 via-card to-card rounded-3xl p-6 shadow-soft border border-border/60 flex flex-col">
-          <h3 className="font-display text-2xl">Region eco score</h3>
-          <p className="text-sm text-foreground/70">Sustainability index across Goa</p>
-          <div className="flex-1 grid place-items-center -my-4">
-            <div className="relative size-52">
-              <ResponsiveContainer width="100%" height="100%">
-                <RadialBarChart innerRadius="75%" outerRadius="100%" data={[{ name: "eco", value: 81, fill: "oklch(0.66 0.14 160)" }]} startAngle={210} endAngle={-30}>
-                  <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
-                  <RadialBar background dataKey="value" cornerRadius={20} />
-                </RadialBarChart>
-              </ResponsiveContainer>
-              <div className="absolute inset-0 grid place-items-center">
-                <div className="text-center">
-                  <div className="font-display text-5xl text-eco">8.1</div>
-                  <div className="text-xs text-foreground/70 mt-1">/ 10 · Healthy</div>
-                </div>
+        </div>
+      ) : data ? (
+        <>
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <WeatherCard icon={CloudSun} label="Average temperature" value={`${data.average.temperature.toFixed(1)}°`} detail="Across five towns in Goa" />
+            <WeatherCard
+              icon={Wind}
+              label="Average feels like"
+              value={`${data.average.feelsLike.toFixed(1)}°`}
+              detail={`Mean wind ${Math.round(data.places.reduce((sum, place) => sum + place.weather.current.wind_speed_10m, 0) / data.places.length)} km/h`}
+            />
+            <WeatherCard
+              icon={Droplets}
+              label="Average humidity"
+              value={`${Math.round(data.average.humidity)}%`}
+              detail={`${data.average.precipitation.toFixed(1)} mm average current precipitation`}
+            />
+            <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-soft">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Wind className="size-4 text-primary" /> Air quality (US AQI)
               </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <span className="font-display text-4xl tabular-nums">{Math.round(data.average.aqi)}</span>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${airStatus?.tone}`}>{airStatus?.label}</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">Regional PM2.5 average · {data.average.pm2_5.toFixed(1)} μg/m³</p>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 mt-2 text-center">
-            <Mini label="Air" value="Good" tone="eco" />
-            <Mini label="Water" value="Fair" tone="sun" />
-            <Mini label="Crowds" value="High" tone="coral" />
-          </div>
-        </motion.div>
-      </div>
 
-      {/* TRENDING + ALERTS */}
-      <div className="mt-6 grid gap-5 lg:grid-cols-3">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-          className="lg:col-span-2 bg-card rounded-3xl p-6 shadow-soft border border-border/60">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="font-display text-2xl">Trending spots</h3>
-              <p className="text-sm text-foreground/70">Live crowd index — last 30 minutes</p>
+          <section className="mt-6 rounded-3xl border border-border/60 bg-card p-5 shadow-soft sm:p-7">
+            <div className="mb-5">
+              <h2 className="font-display text-2xl">Goa forecast · next 12 hours</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Average temperature and rain chance across the selected locations.</p>
             </div>
-          </div>
-          <ul className="space-y-4">
-            {popular.map(p => (
-              <li key={p.name} className="group">
-                <div className="flex items-center justify-between text-sm mb-1.5">
-                  <span className="font-medium flex items-center gap-2"><MapPin className="size-3.5 text-foreground/70" /> {p.name}</span>
-                  <div className="flex items-center gap-3">
-                    <span className={p.trend.startsWith("+") ? "text-coral text-xs font-medium" : "text-eco text-xs font-medium"}>{p.trend}</span>
-                    <span className="text-xs text-foreground/70 tabular-nums w-9 text-right">{p.crowd}%</span>
-                  </div>
-                </div>
-                <div className="h-2.5 rounded-full bg-secondary overflow-hidden">
-                  <motion.div initial={{ width: 0 }} animate={{ width: `${p.crowd}%` }} transition={{ duration: 0.8, ease: "easeOut" }}
-                    className={`h-full rounded-full ${p.crowd > 70 ? "bg-coral" : p.crowd > 45 ? "bg-sun" : "bg-eco"}`} />
-                </div>
-              </li>
-            ))}
-          </ul>
-        </motion.div>
-
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
-          className="bg-card rounded-3xl p-6 shadow-soft border border-border/60">
-          <h3 className="font-display text-2xl mb-1 flex items-center gap-2"><AlertTriangle className="size-5 text-coral" /> Live alerts</h3>
-          <p className="text-sm text-foreground/70 mb-4">Fresh signals from the field</p>
-          <ul className="space-y-3">
-            {alerts.map((a) => (
-              <li key={a.title} className={`rounded-2xl p-4 ${a.tone === "coral" ? "bg-coral/10" : "bg-sun/15"}`}>
-                <div className="font-medium text-sm">{a.title}</div>
-                <div className="text-xs text-foreground/70 mt-0.5">{a.desc}</div>
-              </li>
-            ))}
-          </ul>
-        </motion.div>
-      </div>
-
-      {/* AI REC + EVENTS */}
-      <div className="mt-6 grid gap-5 lg:grid-cols-3">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
-          className="lg:col-span-2 relative overflow-hidden bg-gradient-eco rounded-3xl p-7 shadow-glow text-primary-foreground">
-          <div className="absolute -top-20 -right-20 size-72 rounded-full bg-sun/30 blur-3xl" />
-          <div className="absolute -bottom-20 -left-20 size-72 rounded-full bg-coral/20 blur-3xl" />
-          <div className="relative">
-            <div className="flex items-center gap-2 text-sm opacity-90"><Sparkles className="size-4" /> AI Recommendation</div>
-            <h3 className="font-display text-3xl mt-3 leading-tight max-w-2xl">
-              Skip Baga between 1–4pm. Try <em className="not-italic">Morjim</em> — same vibe, 38% less crowd, eco score 8.7.
-            </h3>
-            <div className="mt-6 flex flex-wrap gap-3">
-              <button className="inline-flex items-center gap-2 bg-card text-foreground rounded-full px-5 py-2.5 text-sm font-medium hover:translate-y-[-2px] transition">
-                Add to my plan <ArrowUpRight className="size-4" />
-              </button>
-              <button className="inline-flex items-center gap-2 bg-card/15 backdrop-blur rounded-full px-5 py-2.5 text-sm font-medium hover:bg-card/25 transition">
-                <TrendingUp className="size-4" /> See trend
-              </button>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={data.hourly} margin={{ left: -18, right: 8, top: 8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="temperatureFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="oklch(0.46 0.11 190)" stopOpacity={0.28} />
+                      <stop offset="100%" stopColor="oklch(0.46 0.11 190)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="oklch(0.5 0.025 200 / 0.15)" vertical={false} />
+                  <XAxis dataKey="time" tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "currentColor" }} minTickGap={24} />
+                  <YAxis
+                    yAxisId="temperature"
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fontSize: 12, fill: "currentColor" }}
+                    domain={["dataMin - 2", "dataMax + 2"]}
+                    unit="°"
+                  />
+                  <YAxis yAxisId="rain" orientation="right" hide domain={[0, 100]} />
+                  <Tooltip
+                    contentStyle={{ borderRadius: 12, border: "1px solid oklch(0.9 0.02 180)" }}
+                    formatter={(value, name) => [
+                      name === "temperature" ? `${value}°C` : `${value}%`,
+                      name === "temperature" ? "Temperature" : "Rain chance",
+                    ]}
+                  />
+                  <Area yAxisId="temperature" type="monotone" dataKey="temperature" stroke="oklch(0.46 0.11 190)" strokeWidth={2.5} fill="url(#temperatureFill)" />
+                  <Area yAxisId="rain" type="monotone" dataKey="rain" stroke="oklch(0.72 0.18 35)" strokeWidth={2} fill="none" />
+                </AreaChart>
+              </ResponsiveContainer>
             </div>
-          </div>
-        </motion.div>
+            <div className="mt-2 flex flex-wrap gap-4 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-primary" /> Temperature</span>
+              <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-coral" /> Rain chance</span>
+            </div>
+          </section>
 
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}
-          className="bg-card rounded-3xl p-6 shadow-soft border border-border/60">
-          <h3 className="font-display text-2xl mb-4 flex items-center gap-2"><Calendar className="size-5 text-primary" /> Nearby events</h3>
-          <ul className="space-y-3">
-            {events.map(e => (
-              <li key={e.title} className="flex gap-3 items-start group hover:bg-secondary/50 rounded-2xl p-2 -m-2 transition">
-                <div className="size-11 rounded-xl bg-gradient-to-br from-primary/20 to-eco/20 grid place-items-center text-xs font-semibold text-primary">{e.date}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">{e.title}</div>
-                  <div className="text-xs text-foreground/70">{e.place} · {e.tag}</div>
-                </div>
-                <ArrowUpRight className="size-4 text-foreground/70 opacity-0 group-hover:opacity-100 transition" />
-              </li>
-            ))}
-          </ul>
-        </motion.div>
-      </div>
+          <section className="mt-6">
+            <div className="mb-4">
+              <h2 className="font-display text-2xl">Local conditions</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Live model readings for towns across North, Central, and South Goa.</p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {data.places.map((place) => {
+                const localAir = aqiDescription(place.air.current.us_aqi);
+                return (
+                  <article key={place.location.name} className="rounded-2xl border border-border/60 bg-card p-5 shadow-soft">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-display text-xl">{place.location.name}</h3>
+                        <p className="text-xs text-muted-foreground">{place.location.region}</p>
+                      </div>
+                      <MapPin className="size-4 text-primary" />
+                    </div>
+                    <div className="mt-5 flex items-end justify-between gap-3">
+                      <div>
+                        <div className="font-display text-4xl tabular-nums">{Math.round(place.weather.current.temperature_2m)}°</div>
+                        <p className="mt-1 text-sm text-muted-foreground">{weatherDescriptions[place.weather.current.weather_code] ?? "Current conditions"}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${localAir.tone}`}>{localAir.label}</span>
+                        <p className="mt-1 text-xs text-muted-foreground">AQI {Math.round(place.air.current.us_aqi)}</p>
+                      </div>
+                    </div>
+                    <div className="mt-4 flex gap-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                      <span>Feels {Math.round(place.weather.current.apparent_temperature)}°</span>
+                      <span>Humidity {Math.round(place.weather.current.relative_humidity_2m)}%</span>
+                      <span>Wind {Math.round(place.weather.current.wind_speed_10m)} km/h</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      <p className="mt-5 text-xs text-muted-foreground">
+        Regional weather and air-quality estimates for Mapusa, Panjim, Vasco da Gama, Margao, and Canacona. Data provided by{" "}
+        <a href="https://open-meteo.com/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">
+          Open-Meteo
+        </a>
+        . Regional averages are computed from these five representative locations; values are model-based estimates, not live station measurements.
+      </p>
     </div>
   );
 }
 
-function Stat({ icon: Icon, label, value, delta, tone }: any) {
-  const toneCls =
-    tone === "primary" ? "bg-primary/10 text-primary" :
-    tone === "sun" ? "bg-sun/25 text-foreground" :
-    tone === "eco" ? "bg-eco/15 text-eco" :
-    "bg-coral/15 text-coral";
+function WeatherCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: typeof CloudSun;
+  label: string;
+  value: string;
+  detail: string;
+}) {
   return (
-    <div className="bg-card rounded-3xl p-5 shadow-soft border border-border/60 flex items-center gap-4 hover:shadow-glow transition group">
-      <div className={`size-14 rounded-2xl grid place-items-center ${toneCls} group-hover:scale-105 transition`}><Icon className="size-7" /></div>
-      <div className="min-w-0">
-        <div className="text-xs font-semibold text-foreground/70 uppercase tracking-wide">{label}</div>
-        <div className="font-display text-2xl text-foreground truncate">{value}</div>
-        <div className="text-xs text-foreground/65">{delta}</div>
+    <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-soft">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Icon className="size-4 text-primary" /> {label}
       </div>
-    </div>
-  );
-}
-
-function Mini({ label, value, tone }: { label: string; value: string; tone: "eco" | "sun" | "coral" }) {
-  const c = tone === "eco" ? "text-eco" : tone === "sun" ? "text-foreground" : "text-coral";
-  return (
-    <div className="rounded-xl bg-secondary/60 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-foreground/65 font-semibold">{label}</div>
-      <div className={`text-sm font-semibold ${c}`}>{value}</div>
+      <div className="mt-3 font-display text-4xl tabular-nums">{value}</div>
+      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
     </div>
   );
 }

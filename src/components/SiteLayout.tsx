@@ -8,7 +8,7 @@ const nav = [
   { to: "/", label: "Home" },
   { to: "/explore", label: "Explore" },
   { to: "/planner", label: "AI Planner" },
-  { to: "/dashboard", label: "Dashboard" },
+  { to: "/dashboard", label: "Weather" },
   { to: "/maps", label: "Smart Maps" },
   { to: "/gems", label: "Hidden Gems" },
   { to: "/sustainability", label: "Eco Score" },
