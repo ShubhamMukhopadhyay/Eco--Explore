@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Bike, Clock, IndianRupee, CheckCircle2, Leaf, MapPin, Phone, Mail, User, ArrowLeft, Calendar } from "lucide-react";
@@ -9,6 +9,11 @@ import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/rentals")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    plan: search.plan === "hour" || search.plan === "half" || search.plan === "full"
+      ? search.plan
+      : "half",
+  }),
   head: () => ({
     meta: [
       { title: "Bike Rentals — EcoExplore" },
@@ -34,8 +39,10 @@ const PICKUPS = ["Anjuna", "Vagator", "Assagao", "Panjim", "Palolem", "Morjim"];
 
 function RentalsPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  const { plan: initialPlan } = Route.useSearch();
   const [bikeId, setBikeId] = useState("city");
-  const [planId, setPlanId] = useState("half");
+  const [planId, setPlanId] = useState(initialPlan);
   const [qty, setQty] = useState(1);
   const [date, setDate] = useState("");
   const [pickup, setPickup] = useState(PICKUPS[0]);
@@ -51,6 +58,18 @@ function RentalsPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user || user.is_anonymous) {
+      if (user?.is_anonymous) {
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+          toast.error(`Could not end guest session: ${error.message}`);
+          return;
+        }
+      }
+      toast.info("Sign in with an account to book a ride.");
+      navigate({ to: "/login", search: { redirect: "/rentals" } as never });
+      return;
+    }
     if (!name || !phone || !date) {
       toast.error("Please fill name, phone and pickup date.");
       return;
@@ -251,7 +270,7 @@ function RentalsPage() {
             </div>
 
             <button type="submit" disabled={saving} className="mt-5 w-full px-5 py-3 rounded-full bg-primary text-primary-foreground font-medium shadow-soft hover:opacity-90 transition disabled:opacity-60">
-              {saving ? "Saving booking..." : "Confirm booking"}
+              {saving ? "Saving booking..." : user && !user.is_anonymous ? "Confirm booking" : "Sign in to book"}
             </button>
             <p className="text-[11px] text-muted-foreground text-center mt-3">Pay on pickup · Free cancellation up to 2 hrs before</p>
           </form>

@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Loader2, MapPin, Sun, Utensils, Bike, Leaf, Clock, IndianRupee, CheckCircle2, ArrowRight } from "lucide-react";
 import { useState } from "react";
@@ -264,9 +264,9 @@ const bikes = [
 ];
 
 const plans = [
-  { label: "Hourly", price: 50, unit: "/ hour", note: "Min. 2 hours" },
-  { label: "Half Day", price: 250, unit: "/ 5 hrs", note: "Helmet + lock included", featured: true },
-  { label: "Full Day", price: 450, unit: "/ 24 hrs", note: "Free delivery to your stay" },
+  { id: "hour", label: "Hourly", price: 50, unit: "/ hour", note: "Min. 2 hours" },
+  { id: "half", label: "Half Day", price: 250, unit: "/ 5 hrs", note: "Helmet + lock included", featured: true },
+  { id: "full", label: "Full Day", price: 450, unit: "/ 24 hrs", note: "Free delivery to your stay" },
 ];
 
 const benefits = [
@@ -300,9 +300,9 @@ function BikeRentalSection() {
             </span>
             <h3 className="font-display text-3xl mt-3 leading-tight">Two wheels.<br/>Zero carbon.</h3>
             <p className="text-sm text-primary-foreground/85 mt-2 max-w-md">Local rentals, helmets, locks & a pocket map of safe cycling routes — delivered free to your doorstep.</p>
-            <button className="mt-5 inline-flex items-center gap-2 bg-card text-foreground rounded-full px-5 py-2.5 text-sm font-medium w-fit hover:translate-y-[-2px] transition shadow-glow">
+            <Link to="/rentals" className="mt-5 inline-flex items-center gap-2 bg-card text-foreground rounded-full px-5 py-2.5 text-sm font-medium w-fit hover:translate-y-[-2px] transition shadow-glow">
               <Bike className="size-4" /> Book a bike <ArrowRight className="size-4" />
-            </button>
+            </Link>
           </div>
         </motion.div>
 
@@ -322,9 +322,9 @@ function BikeRentalSection() {
                 <span className="text-xs opacity-75">{p.unit}</span>
               </div>
               <p className={`text-xs mt-2 ${p.featured ? "text-primary-foreground/85" : "text-muted-foreground"}`}>{p.note}</p>
-              <button className={`mt-4 w-full rounded-full py-2 text-sm font-medium transition ${
+              <Link to="/rentals" search={{ plan: p.id }} className={`mt-4 w-full rounded-full py-2 text-sm font-medium transition text-center ${
                 p.featured ? "bg-card text-foreground hover:opacity-95" : "bg-secondary hover:bg-accent"
-              }`}>Book now</button>
+              }`}>Book now</Link>
             </motion.div>
           ))}
         </div>

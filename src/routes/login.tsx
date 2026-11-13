@@ -1,9 +1,8 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Leaf, Mail, Lock, Loader2, Sparkles } from "lucide-react";
+import { Leaf, Mail, Lock, Loader2, Sparkles, UserRound } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
 import { useAuth } from "@/hooks/use-auth";
 
 type Search = { redirect?: string };
@@ -60,13 +59,17 @@ function LoginPage() {
     }
   };
 
-  const handleGoogle = async () => {
-    setBusy(true); setErr(null);
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: typeof window !== "undefined" ? window.location.origin + "/login" : undefined,
-    });
-    if (result.error) { setErr((result.error as Error).message ?? "Google sign-in failed"); setBusy(false); return; }
-    if (result.redirected) return;
+  const handleGuest = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Guest sign-in failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -121,18 +124,21 @@ function LoginPage() {
 
           <div className="relative my-5">
             <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border" /></div>
-            <div className="relative flex justify-center text-xs text-muted-foreground"><span className="bg-background px-3">or continue with</span></div>
+            <div className="relative flex justify-center text-xs text-muted-foreground"><span className="bg-background px-3">or</span></div>
           </div>
 
           <button
             type="button"
-            onClick={handleGoogle}
+            onClick={handleGuest}
             disabled={busy}
             className="w-full flex items-center justify-center gap-2.5 rounded-xl border border-border bg-background py-3 text-sm font-medium hover:bg-accent transition disabled:opacity-60"
           >
-            <GoogleIcon />
-            Continue with Google
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <UserRound className="size-4" />}
+            Continue as guest
           </button>
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            Explore with guest access; an account is required to book a ride.
+          </p>
 
           <p className="mt-6 text-sm text-muted-foreground text-center">
             {mode === "signin" ? "New here? " : "Already have an account? "}
@@ -157,11 +163,5 @@ function Input({ icon, value, onChange, ...rest }: any) {
         {...rest}
       />
     </div>
-  );
-}
-
-function GoogleIcon() {
-  return (
-    <svg className="size-4" viewBox="0 0 24 24"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.42-1.7 4.18-5.5 4.18-3.31 0-6.01-2.74-6.01-6.13S8.69 6.02 12 6.02c1.88 0 3.14.8 3.86 1.49l2.63-2.54C16.83 3.46 14.62 2.5 12 2.5 6.99 2.5 2.94 6.55 2.94 11.55S6.99 20.6 12 20.6c6.93 0 8.99-4.86 8.99-8.41 0-.57-.06-1-.14-1.99H12z"/></svg>
   );
 }
