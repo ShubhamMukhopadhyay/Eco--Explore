@@ -92,7 +92,7 @@ export function SiteLayout() {
             <button
               onClick={toggleDark}
               aria-label="Toggle dark mode"
-              className="hidden sm:grid size-9 rounded-full bg-secondary hover:bg-accent place-items-center transition"
+              className="grid size-9 rounded-full bg-secondary hover:bg-accent place-items-center transition"
             >
               {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </button>
