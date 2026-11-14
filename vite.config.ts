@@ -2,7 +2,7 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import tsConfigPaths from "vite-tsconfig-paths";
-import { defineConfig, loadEnv, type Plugin } from "vite";
+import { defineConfig, loadEnv, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 
 type ChatMessage = { role?: string; content?: string };
 
@@ -24,9 +24,9 @@ async function completeWithGemini(apiKey: string, incoming: ChatMessage[]) {
     parts: [{ text: String(m.content ?? "") }],
   }));
 
-  const upstream = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const request = () =>
+    fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -34,8 +34,13 @@ async function completeWithGemini(apiKey: string, incoming: ChatMessage[]) {
         contents,
         generationConfig: { temperature: 0.7 },
       }),
-    },
-  );
+    });
+
+  let upstream = await request();
+  if (upstream.status === 503) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    upstream = await request();
+  }
 
   const text = await upstream.text();
   if (!upstream.ok) {
@@ -77,61 +82,87 @@ async function completeWithGrok(apiKey: string, incoming: ChatMessage[]) {
   return data?.choices?.[0]?.message?.content ?? "Sorry — I didn't catch that.";
 }
 
-// Inline Vite plugin that serves POST /api/chat during dev.
-// In production this would be a serverless function or Express route.
+type ApiServer = ViteDevServer | PreviewServer;
+
+function registerApiChat(server: ApiServer, env: Record<string, string>) {
+  server.middlewares.use("/api/chat", async (req, res) => {
+    if (req.method !== "POST") {
+      json(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    const geminiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+    const grokKey =
+      env.XAI_API_KEY || env.GROK_API_KEY || process.env.XAI_API_KEY || process.env.GROK_API_KEY;
+    const provider = (
+      env.AI_PROVIDER ||
+      process.env.AI_PROVIDER ||
+      (grokKey && !geminiKey ? "grok" : "gemini")
+    ).toLowerCase();
+
+    if (provider === "grok" && !grokKey) {
+      json(res, 500, {
+        error: "Missing XAI_API_KEY. Add a key from https://console.x.ai/ and restart the server.",
+      });
+      return;
+    }
+    if (provider !== "grok" && !geminiKey) {
+      json(res, 500, {
+        error:
+          "Missing GEMINI_API_KEY. Add a key from https://aistudio.google.com/apikey to .env and restart the server.",
+      });
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    let parsed: { messages?: ChatMessage[] };
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      json(res, 400, { error: "Bad JSON" });
+      return;
+    }
+
+    const incoming = Array.isArray(parsed.messages) ? parsed.messages.slice(-20) : [];
+
+    try {
+      const reply =
+        provider === "grok"
+          ? await completeWithGrok(grokKey as string, incoming)
+          : await completeWithGemini(geminiKey as string, incoming);
+      json(res, 200, { reply });
+    } catch (e: unknown) {
+      const err = e as { message?: string; status?: number };
+      const status = err.status ?? 500;
+      let message = err.message ?? "Upstream error";
+      try {
+        const parsedErr = JSON.parse(message);
+        message = parsedErr?.error?.message ?? parsedErr?.message ?? message;
+      } catch {
+        /* keep raw message */
+      }
+      if (status === 429) {
+        json(res, 429, { error: "AI service is busy right now. Please try again shortly." });
+      } else if (status === 503) {
+        json(res, 503, {
+          error: "AI service is temporarily overloaded. Please try again shortly.",
+        });
+      } else {
+        json(res, status >= 400 ? status : 500, { error: message });
+      }
+    }
+  });
+}
+
 function apiChatPlugin(env: Record<string, string>): Plugin {
   return {
     name: "api-chat",
     configureServer(server) {
-      server.middlewares.use("/api/chat", async (req, res) => {
-        if (req.method !== "POST") {
-          json(res, 405, { error: "Method not allowed" });
-          return;
-        }
-
-        const geminiKey = env.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-        const grokKey = env.XAI_API_KEY || env.GROK_API_KEY || process.env.XAI_API_KEY || process.env.GROK_API_KEY;
-        const provider = (env.AI_PROVIDER || process.env.AI_PROVIDER || (grokKey && !geminiKey ? "grok" : "gemini")).toLowerCase();
-
-        if (provider === "grok" && !grokKey) {
-          json(res, 500, { error: "Missing XAI_API_KEY. Add a key from https://console.x.ai/ and restart the dev server." });
-          return;
-        }
-        if (provider !== "grok" && !geminiKey) {
-          json(res, 500, { error: "Missing GEMINI_API_KEY. Add a free key from https://aistudio.google.com/apikey to .env and restart the dev server." });
-          return;
-        }
-
-        let body = "";
-        for await (const chunk of req) body += chunk;
-        let parsed: { messages?: ChatMessage[] };
-        try {
-          parsed = JSON.parse(body);
-        } catch {
-          json(res, 400, { error: "Bad JSON" });
-          return;
-        }
-
-        const incoming = Array.isArray(parsed.messages) ? parsed.messages.slice(-20) : [];
-
-        try {
-          const reply =
-            provider === "grok"
-              ? await completeWithGrok(grokKey as string, incoming)
-              : await completeWithGemini(geminiKey as string, incoming);
-          json(res, 200, { reply });
-        } catch (e: unknown) {
-          const err = e as { message?: string; status?: number };
-          const status = err.status ?? 500;
-          let message = err.message ?? "Upstream error";
-          try {
-            const parsedErr = JSON.parse(message);
-            message = parsedErr?.error?.message ?? parsedErr?.message ?? message;
-          } catch { /* keep raw message */ }
-          if (status === 429) json(res, 429, { error: "Rate limit reached. Try again in a moment." });
-          else json(res, status >= 400 ? status : 500, { error: message });
-        }
-      });
+      registerApiChat(server, env);
+    },
+    configurePreviewServer(server) {
+      registerApiChat(server, env);
     },
   };
 }
